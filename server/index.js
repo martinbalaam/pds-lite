@@ -714,10 +714,17 @@ function uniquePdfFileName(fileName) {
 }
 
 function publicBaseUrl(req) {
-  if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/+$/, "");
+  if (process.env.PUBLIC_BASE_URL) return normalizeBaseUrl(process.env.PUBLIC_BASE_URL);
   const forwardedProto = req.headers["x-forwarded-proto"];
   const protocol = typeof forwardedProto === "string" ? forwardedProto.split(",")[0] : req.protocol;
   return `${protocol}://${req.get("host")}`;
+}
+
+function normalizeBaseUrl(rawUrl) {
+  const trimmed = String(rawUrl || "").trim().replace(/\/+$/, "");
+  if (!trimmed) return "";
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
 }
 
 async function exists(targetPath) {

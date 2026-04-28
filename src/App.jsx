@@ -90,6 +90,15 @@ function savePimChannels(nextChannels) {
   window.localStorage.setItem(pimChannelsStorageKey, JSON.stringify(nextChannels));
 }
 
+function normalizePublicPdfUrl(rawUrl) {
+  const value = String(rawUrl || "").trim();
+  if (!value) return "";
+  if (/^https?:\/\//i.test(value)) return value;
+  if (value.startsWith("//")) return `${window.location.protocol}${value}`;
+  if (value.startsWith("/")) return `${window.location.origin}${value}`;
+  return `https://${value}`;
+}
+
 export default function App() {
   const [isAuthenticated, setIsAuthenticated] = useState(loadSessionUnlock);
   const [passwordInput, setPasswordInput] = useState("");
@@ -235,7 +244,7 @@ export default function App() {
       setGeneratedPdf({
         fileName: payload.fileName,
         fileSize: payload.fileSize,
-        url: payload.publicUrl,
+        url: normalizePublicPdfUrl(payload.publicUrl),
       });
       setPdfStatus({
         type: "success",
@@ -2209,7 +2218,7 @@ function PropertiesPanel({
                 <button type="button" onClick={onCopyPdfUrl}>
                   Copy
                 </button>
-                <button type="button" onClick={() => window.open(generatedPdf.url, "_blank", "noopener,noreferrer")}>
+                <button type="button" onClick={() => window.open(normalizePublicPdfUrl(generatedPdf.url), "_blank", "noopener,noreferrer")}>
                   Open
                 </button>
               </div>
