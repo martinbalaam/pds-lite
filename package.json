@@ -4,15 +4,25 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "vite --host 127.0.0.1 --port 4173",
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
+    "dev:client": "vite --host 127.0.0.1 --port 4173",
+    "dev:server": "node server/index.js",
     "build": "vite build",
-    "preview": "vite preview --host 127.0.0.1 --port 4173"
+    "preview": "vite preview --host 127.0.0.1 --port 4173",
+    "start": "node server/index.js"
   },
   "dependencies": {
+    "concurrently": "^9.2.1",
+    "express": "^5.2.1",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^4.2.1",
     "jszip": "^3.10.1",
+    "pdf-lib": "^1.17.1",
     "pdfjs-dist": "^5.6.205",
+    "playwright": "^1.59.1",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "sharp": "^0.34.5"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^6.0.1",

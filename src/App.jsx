@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { brands, defaultTemplates, products, staticItems } from "./data.js";
 import { extractBrandGuideline } from "./brandGuidelines.js";
 
@@ -6,7 +6,14 @@ const storageKey = "pds-lite-react-templates";
 const brandStorageKey = "pds-lite-brands";
 const pimSettingsStorageKey = "pds-lite-pim-settings";
 const pimProductsStorageKey = "pds-lite-pim-products";
+const pimChannelsStorageKey = "pds-lite-pim-channels";
 const pageNumberSelectionId = "__pageNumbers";
+const appPassword = "Martial16210!";
+const sessionUnlockKey = "pds-lite-session-unlocked";
+
+function loadSessionUnlock() {
+  return window.sessionStorage.getItem(sessionUnlockKey) === "true";
+}
 
 function loadBrands() {
   const saved = window.localStorage.getItem(brandStorageKey);
@@ -40,12 +47,12 @@ function saveTemplates(templates) {
 
 function loadPimSettings() {
   const saved = window.localStorage.getItem(pimSettingsStorageKey);
-  if (!saved) return { apiKey: "", baseUrl: "", productsPath: "" };
+  if (!saved) return { apiFeedKey: "", baseUrl: "", productsPath: "", selectedChannelId: "" };
 
   try {
-    return { apiKey: "", baseUrl: "", productsPath: "", ...JSON.parse(saved) };
+    return { apiFeedKey: "", baseUrl: "", productsPath: "", selectedChannelId: "", ...JSON.parse(saved) };
   } catch {
-    return { apiKey: "", baseUrl: "", productsPath: "" };
+    return { apiFeedKey: "", baseUrl: "", productsPath: "", selectedChannelId: "" };
   }
 }
 
@@ -68,11 +75,31 @@ function savePimProducts(nextProducts) {
   window.localStorage.setItem(pimProductsStorageKey, JSON.stringify(nextProducts));
 }
 
+function loadPimChannels() {
+  const saved = window.localStorage.getItem(pimChannelsStorageKey);
+  if (!saved) return [];
+
+  try {
+    return JSON.parse(saved);
+  } catch {
+    return [];
+  }
+}
+
+function savePimChannels(nextChannels) {
+  window.localStorage.setItem(pimChannelsStorageKey, JSON.stringify(nextChannels));
+}
+
 export default function App() {
+  const [isAuthenticated, setIsAuthenticated] = useState(loadSessionUnlock);
+  const [passwordInput, setPasswordInput] = useState("");
+  const [passwordError, setPasswordError] = useState("");
   const [brandLibrary, setBrandLibrary] = useState(loadBrands);
   const [templates, setTemplates] = useState(loadTemplates);
   const [pimSettings, setPimSettings] = useState(loadPimSettings);
   const [pimProducts, setPimProducts] = useState(loadPimProducts);
+  const [pimChannels, setPimChannels] = useState(loadPimChannels);
+  const [pimProductSource, setPimProductSource] = useState({ accountName: "", channelName: "" });
   const activeProducts = pimProducts.length ? pimProducts : products;
   const [selectedTemplateId, setSelectedTemplateId] = useState(defaultTemplates[0].id);
   const [selectedProductId, setSelectedProductId] = useState(activeProducts[0].id);
@@ -85,6 +112,9 @@ export default function App() {
   const [libraryOpen, setLibraryOpen] = useState(true);
   const [pimStatus, setPimStatus] = useState({ type: "idle", message: pimProducts.length ? `${pimProducts.length} PIM products loaded` : "Using demo products" });
   const [pimLastRequest, setPimLastRequest] = useState(null);
+  const [generatedPdf, setGeneratedPdf] = useState(null);
+  const [pdfStatus, setPdfStatus] = useState({ type: "idle", message: "" });
+  const lastChannelFetchKeyRef = useRef("");
 
   const selectedTemplate = useMemo(
     () => templates.find((template) => template.id === selectedTemplateId) ?? templates[0],
@@ -92,16 +122,43 @@ export default function App() {
   );
   const selectedProduct = activeProducts.find((product) => product.id === selectedProductId) ?? activeProducts[0] ?? products[0];
   const selectedBrand = brandLibrary.find((brand) => brand.id === selectedTemplate.brandId) ?? brandLibrary[0];
+  const selectedChannel = pimChannels.find((channel) => String(channel.id) === String(pimSettings.selectedChannelId)) || null;
   const selectedElement = selectedTemplate.elements.find((element) => element.id === selectedElementId);
   const isPageNumberSelected = selectedElementId === pageNumberSelectionId;
   const dynamicItems = getProductFieldItems(selectedProduct);
   const templatePages = getTemplatePages(selectedTemplate);
+  const productSourceInfo = getProductSourceInfo(selectedProduct, pimProductSource);
 
   const visibleProducts = activeProducts.filter((product) => {
     const query = productSearch.trim().toLowerCase();
     const haystack = `${product.id} ${product.name} ${product.category}`.toLowerCase();
     return haystack.includes(query);
   });
+
+  useEffect(() => {
+    const feedKey = pimSettings.apiFeedKey?.trim() || "";
+    if (!feedKey) {
+      lastChannelFetchKeyRef.current = "";
+      if (pimChannels.length || pimSettings.selectedChannelId) {
+        setPimChannels([]);
+        savePimChannels([]);
+        setPimSettings((current) => {
+          const next = { ...current, selectedChannelId: "" };
+          savePimSettings(next);
+          return next;
+        });
+      }
+      return;
+    }
+
+    const timeoutId = window.setTimeout(() => {
+      if (lastChannelFetchKeyRef.current === feedKey) return;
+      lastChannelFetchKeyRef.current = feedKey;
+      getPimChannels(feedKey);
+    }, 450);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [pimChannels.length, pimSettings.apiFeedKey, pimSettings.selectedChannelId]);
 
   function updatePimSettings(patch) {
     setPimSettings((current) => {
@@ -111,11 +168,132 @@ export default function App() {
     });
   }
 
+  function unlockApp(event) {
+    event.preventDefault();
+    if (passwordInput === appPassword) {
+      window.sessionStorage.setItem(sessionUnlockKey, "true");
+      setIsAuthenticated(true);
+      setPasswordError("");
+      setPasswordInput("");
+      return;
+    }
+    setPasswordError("Password not recognised.");
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <main className="password-gate">
+        <section className="password-card">
+          <p className="eyebrow">PDS Lite</p>
+          <h1>Password Required</h1>
+          <p className="password-copy">Enter the startup password to open the template builder.</p>
+          <form className="password-form" onSubmit={unlockApp}>
+            <label>
+              Password
+              <input
+                autoFocus
+                type="password"
+                value={passwordInput}
+                onChange={(event) => {
+                  setPasswordInput(event.target.value);
+                  if (passwordError) setPasswordError("");
+                }}
+              />
+            </label>
+            {passwordError && <div className="password-error">{passwordError}</div>}
+            <button className="primary-action" type="submit">
+              Unlock
+            </button>
+          </form>
+        </section>
+      </main>
+    );
+  }
+
+  async function generatePdf() {
+    setPdfStatus({ type: "loading", message: "Generating PDF..." });
+    try {
+      persistCurrentTemplate();
+      const renderRoot = document.getElementById("pdfRenderRoot");
+      if (!renderRoot) throw new Error("PDF render surface not available.");
+
+      const page = pageDimensions(selectedTemplate.page);
+      const response = await fetch("/api/pdf/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          brand: selectedBrand,
+          fileName: pdfFileName(selectedProduct.id),
+          page,
+          product: selectedProduct,
+          template: selectedTemplate,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || "Could not generate the PDF.");
+
+      setGeneratedPdf({
+        fileName: payload.fileName,
+        fileSize: payload.fileSize,
+        url: payload.publicUrl,
+      });
+      setPdfStatus({
+        type: "success",
+        message: `PDF generated and stored by the server${payload.fileSize ? ` (${formatBytes(payload.fileSize)})` : ""}. The URL below can be copied or opened directly.`,
+      });
+    } catch (error) {
+      setPdfStatus({ type: "error", message: error?.message || "Could not generate the PDF." });
+    }
+  }
+
+  async function copyGeneratedPdfUrl() {
+    if (!generatedPdf?.url) return;
+    try {
+      await navigator.clipboard.writeText(generatedPdf.url);
+      setPdfStatus({
+        type: "success",
+        message: "PDF URL copied. This browser URL works locally in this session; a public upload endpoint is still needed for the PIM.",
+      });
+    } catch {
+      setPdfStatus({ type: "error", message: "Could not copy the PDF URL from this browser." });
+    }
+  }
+
+  async function uploadGeneratedPdfToPim() {
+    if (!generatedPdf?.fileName) return;
+    if (!pimSettings.apiFeedKey?.trim()) {
+      setPdfStatus({ type: "error", message: "API Feed Key is required before uploading a PDF to PIM." });
+      return;
+    }
+
+    setPdfStatus({ type: "loading", message: "Uploading PDF to PIM..." });
+    try {
+      const response = await fetch("/api/pim/upload-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          apiFeedKey: pimSettings.apiFeedKey.trim(),
+          fileName: generatedPdf.fileName,
+        }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload?.error || "Could not upload the PDF to PIM.");
+
+      setPdfStatus({
+        type: "success",
+        message: payload?.message || "PDF uploaded to PIM successfully.",
+      });
+    } catch (error) {
+      setPdfStatus({ type: "error", message: error?.message || "Could not upload the PDF to PIM." });
+    }
+  }
+
   async function testPimConnection() {
     setPimStatus({ type: "loading", message: "Testing PIM access..." });
     try {
       const request = pimRequestDetails({
-        apiKey: pimSettings.apiKey,
+        apiKey: selectedChannel?.token,
+        apiKeyLabel: "Selected channel token",
         baseUrl: pimSettings.baseUrl,
         path: pimSettings.productsPath,
       });
@@ -128,11 +306,44 @@ export default function App() {
     }
   }
 
+  async function getPimChannels(feedKeyOverride) {
+    const apiFeedKey = feedKeyOverride?.trim() || pimSettings.apiFeedKey?.trim() || "";
+    if (!apiFeedKey) return;
+
+    setPimStatus({ type: "loading", message: "Loading channels from PIM..." });
+    try {
+      const request = pimRequestDetails({
+        apiKey: apiFeedKey,
+        apiKeyLabel: "API Feed Key",
+        baseUrl: "https://indigo.pimberly.com",
+        path: "/api/channels",
+      });
+      setPimLastRequest(request.diagnostics);
+      const response = await fetch(request.url, request.options);
+      if (!response.ok) throw new Error(`${response.status} ${response.statusText || "Request failed"}`);
+      const payload = await response.json();
+      const nextChannels = normalizePimChannels(payload);
+      if (!nextChannels.length) throw new Error("The PIM response did not contain any channels.");
+      setPimChannels(nextChannels);
+      savePimChannels(nextChannels);
+      const selectableChannels = nextChannels.filter((channel) => channel.isApiChannel && channel.token);
+      const existingSelection = selectableChannels.find((channel) => String(channel.id) === String(pimSettings.selectedChannelId));
+      updatePimSettings({ selectedChannelId: String((existingSelection || selectableChannels[0] || {}).id || "") });
+      setPimStatus({
+        type: "success",
+        message: `${nextChannels.length} channels loaded from PIM. ${selectableChannels.length} API channel${selectableChannels.length === 1 ? "" : "s"} available.`,
+      });
+    } catch (error) {
+      setPimStatus({ type: "error", message: pimErrorMessage(error) });
+    }
+  }
+
   async function getPimProducts() {
     setPimStatus({ type: "loading", message: "Running JSON GET for products..." });
     try {
       const request = pimRequestDetails({
-        apiKey: pimSettings.apiKey,
+        apiKey: selectedChannel?.token,
+        apiKeyLabel: "Selected channel token",
         baseUrl: pimSettings.baseUrl,
         path: pimSettings.productsPath,
       });
@@ -140,6 +351,7 @@ export default function App() {
       const response = await fetch(request.url, request.options);
       if (!response.ok) throw new Error(`${response.status} ${response.statusText || "Request failed"}`);
       const payload = await response.json();
+      setPimProductSource(extractProductSourceInfo(payload));
       const nextProducts = normalizePimProducts(payload);
       if (!nextProducts.length) throw new Error("The PIM response did not contain a product list.");
       setPimProducts(nextProducts);
@@ -157,6 +369,7 @@ export default function App() {
     if (!confirmed) return;
 
     setPimProducts([]);
+    setPimProductSource({ accountName: "", channelName: "" });
     savePimProducts([]);
     setSelectedProductId(products[0].id);
     setSelectedFieldIds([]);
@@ -679,9 +892,12 @@ function moveSelectedElementLayer(action) {
             </summary>
             <div className="panel-content">
               <PimAdmin
+                channels={pimChannels}
                 lastRequest={pimLastRequest}
+                onChannelChange={(selectedChannelId) => updatePimSettings({ selectedChannelId })}
                 onClearProducts={clearPimProducts}
                 productCount={pimProducts.length}
+                selectedChannel={selectedChannel}
                 settings={pimSettings}
                 status={pimStatus}
                 onGetProducts={getPimProducts}
@@ -783,11 +999,29 @@ function moveSelectedElementLayer(action) {
         <header className="builder-toolbar">
           <div className="builder-heading">
             <p className="eyebrow">Tech sheet builder</p>
-            <input
-              className="template-name-input"
-              value={selectedTemplate.name}
-              onChange={(event) => updateTemplate({ name: event.target.value })}
-            />
+            <div className="template-name-row">
+              <input
+                className="template-name-input"
+                value={selectedTemplate.name}
+                onChange={(event) => updateTemplate({ name: event.target.value })}
+              />
+            </div>
+            {productSourceInfo && (
+              <div className="template-source-pills">
+                {productSourceInfo.accountName && (
+                  <span className="template-source-pill">
+                    <strong>Account</strong>
+                    <span>{productSourceInfo.accountName}</span>
+                  </span>
+                )}
+                {productSourceInfo.channelName && (
+                  <span className="template-source-pill">
+                    <strong>Channel</strong>
+                    <span>{productSourceInfo.channelName}</span>
+                  </span>
+                )}
+              </div>
+            )}
           </div>
           <div className="toolbar-actions">
             <label>
@@ -922,19 +1156,24 @@ function moveSelectedElementLayer(action) {
 
           <PropertiesPanel
             brand={selectedBrand}
+            generatedPdf={generatedPdf}
             onAddShape={addShapeElement}
             onAddSheet={addSheet}
             onAddText={addTextElement}
             onClearAll={clearTemplateElementsExceptLogo}
+            onCopyPdfUrl={copyGeneratedPdfUrl}
             onDeleteSheet={deleteSelectedSheet}
             element={selectedElement}
             canDeleteSheet={selectedPageIndex > 0}
             isPageNumberSelected={isPageNumberSelected}
             onDelete={deleteSelectedElement}
+            onGeneratePdf={generatePdf}
+            onUploadPdfToPim={uploadGeneratedPdfToPim}
             onLayerMove={moveSelectedElementLayer}
             onPageNumberModeChange={setPageNumberMode}
             onPageNumbersUpdate={updatePageNumbers}
             onPageUpdate={(patch) => updateTemplate({ page: { ...selectedTemplate.page, ...patch } })}
+            pdfStatus={pdfStatus}
             product={selectedProduct}
             onUpdate={updateSelectedElement}
             page={selectedTemplate.page}
@@ -951,24 +1190,72 @@ function moveSelectedElementLayer(action) {
           onClose={() => setPreviewOpen(false)}
         />
       )}
+
+      <div className="pdf-render-surface" aria-hidden="true">
+        <PreviewPages
+          brand={selectedBrand}
+          className="preview-stack pdf-render-root"
+          containerId="pdfRenderRoot"
+          product={selectedProduct}
+          template={selectedTemplate}
+        />
+      </div>
     </main>
   );
 }
 
-function PimAdmin({ lastRequest, onClearProducts, onGetProducts, onSettingsChange, onTest, productCount, settings, status }) {
+function PimAdmin({
+  channels,
+  lastRequest,
+  onChannelChange,
+  onClearProducts,
+  onGetProducts,
+  onSettingsChange,
+  onTest,
+  productCount,
+  selectedChannel,
+  settings,
+  status,
+}) {
   const isBusy = status.type === "loading";
-  const canRequest = Boolean(settings.baseUrl?.trim() || settings.productsPath?.trim());
+  const selectedChannelToken = selectedChannel?.token?.trim() || "";
+  const canRequest = Boolean((settings.baseUrl?.trim() || settings.productsPath?.trim()) && selectedChannelToken);
 
   return (
     <div className="pim-admin">
       <label>
-        API key/code
+        API Feed Key
         <input
-          value={settings.apiKey}
+          value={settings.apiFeedKey}
           type="password"
-          placeholder="Paste API key"
-          onChange={(event) => onSettingsChange({ apiKey: event.target.value })}
+          placeholder="Paste API feed key"
+          onChange={(event) => onSettingsChange({ apiFeedKey: event.target.value })}
         />
+      </label>
+      <label className="pim-channel-row">
+        <span>Channels</span>
+        <select
+          value={settings.selectedChannelId || ""}
+          onChange={(event) => onChannelChange(event.target.value)}
+          disabled={!settings.apiFeedKey?.trim() || channels.length === 0}
+        >
+          <option value="">
+            {!settings.apiFeedKey?.trim()
+              ? "Enter API Feed Key to load channels"
+              : channels.some((channel) => channel.isApiChannel && channel.token)
+                ? "Select a channel"
+                : isBusy
+                  ? "Loading channels..."
+                  : channels.length
+                    ? "No API channels available"
+                    : "No channels loaded"}
+          </option>
+          {channels.map((channel) => (
+            <option key={channel.id} value={channel.id} disabled={!channel.isApiChannel || !channel.token}>
+              {channel.name}
+            </option>
+          ))}
+        </select>
       </label>
       <label>
         Base URL
@@ -1015,6 +1302,23 @@ function PimAdmin({ lastRequest, onClearProducts, onGetProducts, onSettingsChang
           <span>URL: {lastRequest.url}</span>
           <span>Authorisation key: {lastRequest.authorizationKey}</span>
           <span>Authorisation code: {lastRequest.authorizationValue}</span>
+        </div>
+      )}
+      {channels.length > 0 && (
+        <div className="pim-request-debug">
+          <strong>Loaded channels</strong>
+          <span>{channels.length} available</span>
+          {settings.selectedChannelId && (
+            <span>
+              Selected channel ID: {settings.selectedChannelId}
+            </span>
+          )}
+          <span>{channels.filter((channel) => channel.isApiChannel && channel.token).length} API-enabled</span>
+          {selectedChannel && (
+            <span>
+              Selected channel token: {maskSecret(selectedChannelToken)}
+            </span>
+          )}
         </div>
       )}
     </div>
@@ -1625,17 +1929,22 @@ function PropertiesPanel({
   brand,
   canDeleteSheet,
   element,
+  generatedPdf,
   isPageNumberSelected,
   onAddShape,
   onAddSheet,
   onAddText,
   onClearAll,
+  onCopyPdfUrl,
   onDeleteSheet,
   onDelete,
+  onGeneratePdf,
   onLayerMove,
   onPageNumberModeChange,
   onPageNumbersUpdate,
   onPageUpdate,
+  onUploadPdfToPim,
+  pdfStatus,
   product,
   onUpdate,
   page,
@@ -1880,6 +2189,34 @@ function PropertiesPanel({
           )}
         </form>
       )}
+      <section className="pdf-tools">
+        <button className="add-tool-button" type="button" onClick={onGeneratePdf}>
+          Generate PDF
+        </button>
+        {pdfStatus.message && <div className={`pdf-status ${pdfStatus.type}`}>{pdfStatus.message}</div>}
+        {generatedPdf && (
+          <>
+            <button className="add-tool-button" type="button" onClick={onUploadPdfToPim}>
+              Upload to PIM
+            </button>
+            <details className="page-number-menu pdf-url-menu">
+              <summary>PDF URL</summary>
+              <div>
+                <label>
+                  PDF URL
+                  <input readOnly type="text" value={generatedPdf.url} />
+                </label>
+                <button type="button" onClick={onCopyPdfUrl}>
+                  Copy
+                </button>
+                <button type="button" onClick={() => window.open(generatedPdf.url, "_blank", "noopener,noreferrer")}>
+                  Open
+                </button>
+              </div>
+            </details>
+          </>
+        )}
+      </section>
     </aside>
   );
 }
@@ -2200,9 +2537,44 @@ function ShapeControls({ brand, element, onUpdate }) {
   );
 }
 
-function PreviewDialog({ brand, product, template, onClose }) {
+function PreviewPages({ brand, className = "preview-stack", containerId = "previewPage", product, template }) {
   const pages = getTemplatePages(template);
   const pageNumbers = defaultPageNumbers(template);
+
+  return (
+    <div id={containerId} className={className}>
+      {pages.map((page, pageIndex) => (
+        <div
+          className={`preview-page size-${template.page.size} ${template.page.orientation}`}
+          key={page.id}
+          style={pageSurfaceStyle(template.page)}
+        >
+          {template.elements
+            .filter((element) => (element.pageIndex ?? 0) === pageIndex)
+            .map((element) => (
+              <CanvasElement
+                brand={brand}
+                element={element}
+                isSelected={false}
+                key={element.id}
+                previewOnly
+                product={product}
+              />
+            ))}
+          <PageNumber
+            isSelected={false}
+            pageIndex={pageIndex}
+            pageNumbers={pageNumbers}
+            pageTotal={pages.length}
+            onSelect={() => {}}
+          />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PreviewDialog({ brand, product, template, onClose }) {
   return (
     <div className="dialog-backdrop">
       <section className="preview-dialog">
@@ -2222,35 +2594,7 @@ function PreviewDialog({ brand, product, template, onClose }) {
             </button>
           </div>
         </div>
-        <div id="previewPage" className="preview-stack">
-          {pages.map((page, pageIndex) => (
-            <div
-              className={`preview-page size-${template.page.size} ${template.page.orientation}`}
-              key={page.id}
-              style={pageSurfaceStyle(template.page)}
-            >
-              {template.elements
-                .filter((element) => (element.pageIndex ?? 0) === pageIndex)
-                .map((element) => (
-                  <CanvasElement
-                    brand={brand}
-                    element={element}
-                    isSelected={false}
-                    key={element.id}
-                    previewOnly
-                    product={product}
-                  />
-                ))}
-              <PageNumber
-                isSelected={false}
-                pageIndex={pageIndex}
-                pageNumbers={pageNumbers}
-                pageTotal={pages.length}
-                onSelect={() => {}}
-              />
-            </div>
-          ))}
-        </div>
+        <PreviewPages brand={brand} product={product} template={template} />
       </section>
     </div>
   );
@@ -2451,6 +2795,8 @@ function pimRequestOptions(settings) {
 function pimRequestDetails(settings) {
   const url = pimRequestUrl(settings);
   const options = pimRequestOptions(settings);
+  const apiKeyLabel = settings.apiKeyLabel || "API key/code";
+  const sentApiKey = settings.apiKey?.trim() || tokenFromUrl(url);
 
   return {
     url,
@@ -2458,10 +2804,67 @@ function pimRequestDetails(settings) {
     diagnostics: {
       method: options.method,
       url: maskAccessTokenInUrl(url),
-      authorizationKey: settings.apiKey?.trim() || url.includes("access_token=") ? "access_token query parameter" : "Not sent",
-      authorizationValue: settings.apiKey?.trim() ? maskSecret(settings.apiKey.trim()) : tokenFromUrl(url) ? maskSecret(tokenFromUrl(url)) : "No API code entered",
+      authorizationKey: sentApiKey ? `access_token query parameter (${apiKeyLabel})` : "Not sent",
+      authorizationValue: sentApiKey ? maskSecret(sentApiKey) : "No API code entered",
     },
   };
+}
+
+function normalizePimChannels(payload) {
+  const source = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.channels)
+      ? payload.channels
+      : Array.isArray(payload?.data)
+        ? payload.data
+        : Array.isArray(payload?.results)
+          ? payload.results
+          : [];
+
+  return source
+    .map((channel) => {
+      const id = channel?.id;
+      const name = channel?.name || channel?.title || channel?.channel_name || channel?.channelName;
+      const token = extractChannelApiToken(channel?.dataAPIKeys);
+      if (id == null || !name) return null;
+      return {
+        id: String(id),
+        name: String(name),
+        isApiChannel: Boolean(channel?.dataAPIKeys),
+        token,
+      };
+    })
+    .filter(Boolean)
+    .sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function extractChannelApiToken(dataApiKeys) {
+  if (!dataApiKeys) return "";
+  if (typeof dataApiKeys === "string") return dataApiKeys.trim();
+
+  if (Array.isArray(dataApiKeys)) {
+    for (const entry of dataApiKeys) {
+      const token = extractChannelApiToken(entry);
+      if (token) return token;
+    }
+    return "";
+  }
+
+  if (typeof dataApiKeys === "object") {
+    const directTokenKeys = ["token", "access_token", "accessToken", "key", "apiKey", "value"];
+    for (const key of directTokenKeys) {
+      if (typeof dataApiKeys[key] === "string" && dataApiKeys[key].trim()) {
+        return dataApiKeys[key].trim();
+      }
+    }
+
+    for (const value of Object.values(dataApiKeys)) {
+      const token = extractChannelApiToken(value);
+      if (token) return token;
+    }
+  }
+
+  return "";
 }
 
 function interpolatePimPath(path, replacements = {}) {
@@ -3000,6 +3403,45 @@ function getProductFieldItems(product) {
   ]);
 }
 
+function getProductSourceInfo(product, sourceInfo = {}) {
+  const accountName = sourceInfo.accountName || findProductSourceValue(product, ["accountname", "account", "pimaccountname"]);
+  const channelName = sourceInfo.channelName || findProductSourceValue(product, ["channelname", "channel", "channeltitle"]);
+  if (!accountName && !channelName) return null;
+  return { accountName, channelName };
+}
+
+function extractProductSourceInfo(payload) {
+  return {
+    accountName: findValueByNormalizedKeys(payload, ["accountname", "account", "pimaccountname"]),
+    channelName: findValueByNormalizedKeys(payload, ["channelname", "channel", "channeltitle"]),
+  };
+}
+
+function findProductSourceValue(product, normalizedKeys) {
+  const attributeValue = findValueByNormalizedKeys(product?.attributes, normalizedKeys);
+  if (attributeValue) return attributeValue;
+  return findValueByNormalizedKeys(product?.raw, normalizedKeys);
+}
+
+function findValueByNormalizedKeys(source, normalizedKeys) {
+  if (!source || typeof source !== "object") return "";
+  const allowedKeys = new Set(normalizedKeys);
+
+  for (const [key, value] of Object.entries(source)) {
+    if (allowedKeys.has(normalizeLookupToken(key))) {
+      const normalizedValue = normalizeAttributeValue(value);
+      if (normalizedValue) return normalizedValue;
+    }
+
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      const nestedValue = findValueByNormalizedKeys(value, normalizedKeys);
+      if (nestedValue) return nestedValue;
+    }
+  }
+
+  return "";
+}
+
 function shouldHideAttributeField(key, value, assetUrls) {
   if (!looksLikeUrl(value)) return false;
   const canonicalUrl = canonicalizeAssetUrl(value);
@@ -3348,6 +3790,18 @@ function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
 
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB"];
+  let size = bytes;
+  let index = 0;
+  while (size >= 1024 && index < units.length - 1) {
+    size /= 1024;
+    index += 1;
+  }
+  return `${size.toFixed(size >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
+}
+
 function roundZoom(value) {
   return Math.round(value * 100) / 100;
 }
@@ -3440,6 +3894,43 @@ function escapeHtml(value) {
 
 function printScaleForWorkspace() {
   return 96 / 72;
+}
+
+function collectDocumentCssText() {
+  return Array.from(document.styleSheets)
+    .map((styleSheet) => {
+      try {
+        return Array.from(styleSheet.cssRules || []).map((rule) => rule.cssText).join("\n");
+      } catch {
+        return "";
+      }
+    })
+    .filter(Boolean)
+    .join("\n");
+}
+
+function pdfFileName(productId) {
+  return `${sanitizeFilePart(productId || "product")}_TechSheet_${pdfTimestamp()}.pdf`;
+}
+
+function pdfTimestamp() {
+  const now = new Date();
+  const parts = [
+    now.getFullYear(),
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+    String(now.getHours()).padStart(2, "0"),
+    String(now.getMinutes()).padStart(2, "0"),
+    String(now.getSeconds()).padStart(2, "0"),
+  ];
+  return `${parts[0]}${parts[1]}${parts[2]}-${parts[3]}${parts[4]}${parts[5]}`;
+}
+
+function sanitizeFilePart(value) {
+  return String(value || "")
+    .trim()
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "") || "file";
 }
 
 function qrCodeUrl(value) {

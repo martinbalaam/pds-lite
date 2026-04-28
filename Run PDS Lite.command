@@ -29,5 +29,16 @@ echo "Starting PDS Lite React Template Builder..."
 echo "Opening ${URL}"
 echo
 
+for PORT in 4173 4174; do
+  if command -v lsof >/dev/null 2>&1; then
+    EXISTING_PIDS=$(lsof -ti tcp:$PORT 2>/dev/null || true)
+    if [ -n "$EXISTING_PIDS" ]; then
+      echo "Stopping existing process on port $PORT..."
+      kill $EXISTING_PIDS 2>/dev/null || true
+      sleep 1
+    fi
+  fi
+done
+
 (sleep 2 && open "${URL}") &
 npm run dev
